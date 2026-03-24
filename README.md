@@ -2,6 +2,19 @@
 
 Elixir library for programmatically interacting with Apple's [`container`](https://github.com/apple/container) implementation.
 
+## Installation
+
+Add `:container` to your dependencies:
+
+```elixir
+  defp deps do
+    [
+      # ...
+      {:container, "~> 0.1"}
+    ]
+  end
+```
+
 ## Examples
 
 ```elixir
