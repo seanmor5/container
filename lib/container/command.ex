@@ -10,7 +10,7 @@ defmodule Container.Command do
 
     command
     |> Operation.new(args, cli_opts, operation_opts)
-    |> Container.execute(exec_opts)
+    |> execute(exec_opts)
   end
 
   def json_output_opts(opts, output_flag \\ true) do
@@ -58,5 +58,20 @@ defmodule Container.Command do
       end)
 
     {cli_pairs, exec_opts}
+  end
+
+  defp execute(%Operation{} = operation, exec_opts) do
+    transport = Keyword.get(exec_opts, :transport, default_transport())
+    transport_opts = Keyword.get(exec_opts, :transport_opts, default_transport_opts())
+
+    transport.execute(operation, transport_opts)
+  end
+
+  defp default_transport do
+    Application.get_env(:container, :transport, Container.Transport.CLI)
+  end
+
+  defp default_transport_opts do
+    Application.get_env(:container, :transport_opts, [])
   end
 end

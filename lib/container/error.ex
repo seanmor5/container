@@ -3,7 +3,7 @@ defmodule Container.Error do
   Error returned when a container operation fails.
   """
 
-  defexception [:message, :command, :stdout, :stderr, :exit_status, :reason]
+  defstruct [:message, :command, :stdout, :stderr, :exit_status, :reason]
 
   @type t :: %__MODULE__{
           message: String.t(),
@@ -14,7 +14,7 @@ defmodule Container.Error do
           reason: term()
         }
 
-  @spec command_failed(keyword()) :: t()
+  @doc false
   def command_failed(opts) do
     command = Keyword.get(opts, :command)
     exit_status = Keyword.get(opts, :exit_status)
@@ -31,7 +31,7 @@ defmodule Container.Error do
     }
   end
 
-  @spec transport_failed(keyword()) :: t()
+  @doc false
   def transport_failed(opts) do
     reason = Keyword.fetch!(opts, :reason)
     command = Keyword.get(opts, :command)
@@ -43,7 +43,7 @@ defmodule Container.Error do
     }
   end
 
-  @spec invalid_json(keyword()) :: t()
+  @doc false
   def invalid_json(opts) do
     command = Keyword.get(opts, :command)
     stdout = Keyword.get(opts, :stdout, "")

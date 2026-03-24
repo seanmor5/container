@@ -4,6 +4,23 @@ defmodule Container.Exec do
 
   Sessions keep the child process alive, allow incremental writes to stdin,
   and expose stdout chunks through blocking reads.
+
+  You usually obtain a session by calling `Container.exec/3` with
+  `stream: true`:
+
+      {:ok, session} =
+        Container.exec("web", ["sh"], stream: true, interactive: true)
+
+      :ok = Container.Exec.write(session, "echo hello\\n")
+      {:ok, chunk} = Container.Exec.read(session, 5_000)
+      {:ok, result} = Container.Exec.await_exit(session, 5_000)
+
+  `read/2` returns stdout chunks as they arrive. Once the process exits and
+  all buffered output has been consumed, `read/2` returns `:eof`.
+
+  `await_exit/2` blocks until the child process exits and returns either
+  `{:ok, %Container.Result{}}` for a zero exit status or
+  `{:error, %Container.Error{}}` for a non-zero exit status.
   """
 
   use GenServer
@@ -14,6 +31,22 @@ defmodule Container.Exec do
   @enforce_keys [:pid]
   defstruct [:pid]
 
+  @doc """
+  Opens a streamed exec session.
+
+  This is a low-level constructor used by the CLI transport. Most callers
+  should use `Container.exec/3` with `stream: true` instead.
+
+  ## Options
+
+    * `:executable` - executable path or name to run
+
+    * `:argv` - argument vector passed to the executable
+
+    * `:command` - full command representation stored in the exit result
+
+    * `:stdin` - optional initial stdin written after the process starts
+  """
   def open(opts) do
     case GenServer.start_link(__MODULE__, opts) do
       {:ok, pid} -> {:ok, %__MODULE__{pid: pid}}
@@ -21,18 +54,60 @@ defmodule Container.Exec do
     end
   end
 
+  @doc """
+  Writes data to the session's stdin.
+
+  `data` is converted to a binary before being written.
+
+  ## Examples
+
+      :ok = Container.Exec.write(session, "echo hello\\n")
+
+  Returns `:ok` on success or `{:error, reason}` if the session is closed
+  or the write fails.
+  """
   def write(%__MODULE__{pid: pid}, data) do
     safe_call(pid, {:write, IO.iodata_to_binary(data)})
   end
 
+  @doc """
+  Reads the next available stdout chunk.
+
+  `timeout` defaults to `:infinity`. If output is already buffered, the next
+  chunk is returned immediately. If the process has exited and all output has
+  been consumed, this returns `:eof`.
+
+  ## Examples
+
+      {:ok, chunk} = Container.Exec.read(session, 5_000)
+      :eof = Container.Exec.read(session, 5_000)
+  """
   def read(%__MODULE__{pid: pid}, timeout \\ :infinity) do
     safe_call(pid, :read, timeout)
   end
 
+  @doc """
+  Waits for the child process to exit.
+
+  `timeout` defaults to `:infinity`. On success this returns
+  `{:ok, %Container.Result{}}`. If the command exits non-zero, it returns
+  `{:error, %Container.Error{}}`.
+
+  ## Examples
+
+      {:ok, result} = Container.Exec.await_exit(session, 5_000)
+  """
   def await_exit(%__MODULE__{pid: pid}, timeout \\ :infinity) do
     safe_call(pid, :await_exit, timeout)
   end
 
+  @doc """
+  Closes the session and terminates the child process if it is still running.
+
+  ## Examples
+
+      :ok = Container.Exec.close(session)
+  """
   def close(%__MODULE__{pid: pid}) do
     safe_call(pid, :close)
   end

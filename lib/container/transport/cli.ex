@@ -1,7 +1,5 @@
 defmodule Container.Transport.CLI do
-  @moduledoc """
-  CLI transport for Apple's `container` command.
-  """
+  @moduledoc false
 
   @behaviour Container.Transport
 

@@ -1,13 +1,30 @@
 defmodule Container.MixProject do
   use Mix.Project
 
+  @source_url "https://github.com/seanmor5/container"
+  @version "0.1.0"
+
   def project do
     [
       app: :container,
-      version: "0.1.0",
+      version: @version,
+      name: "Container",
       elixir: "~> 1.19",
+      cli: cli(),
+      docs: docs(),
       start_permanent: Mix.env() == :prod,
-      deps: deps()
+      deps: deps(),
+      description: "Elixir library for Apple Containers",
+      package: package()
+    ]
+  end
+
+  def cli do
+    [
+      preferred_envs: [
+        docs: :docs,
+        "hex.publish": :docs
+      ]
     ]
   end
 
@@ -21,8 +38,23 @@ defmodule Container.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
-      # {:dep_from_hexpm, "~> 0.3.0"},
-      # {:dep_from_git, git: "https://github.com/elixir-lang/my_dep.git", tag: "0.1.0"}
+      {:ex_doc, "~> 0.40", only: :docs}
+    ]
+  end
+
+  defp package do
+    [
+      maintainers: ["Sean Moriarity"],
+      licenses: ["Apache-2.0"],
+      links: %{"GitHub" => @source_url}
+    ]
+  end
+
+  defp docs do
+    [
+      main: "Container",
+      source_ref: "v#{@version}",
+      source_url: @source_url
     ]
   end
 end

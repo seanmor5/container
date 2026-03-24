@@ -1,6 +1,10 @@
 defmodule Container.Operation do
   @moduledoc """
-  Semantic representation of a `container` command.
+  Representation of a `container` command.
+
+  A `Container.Operation` captures the normalized command, arguments,
+  options, stdin, output mode, and execution mode that a transport uses
+  to execute a request.
   """
 
   @enforce_keys [:command]
@@ -22,7 +26,7 @@ defmodule Container.Operation do
           mode: :collect | :stream
         }
 
-  @spec new([atom() | String.t()], list(), keyword(), keyword()) :: t()
+  @doc false
   def new(command, args \\ [], opts \\ [], operation_opts \\ []) do
     operation_opts = merge_cli_opts(operation_opts)
 

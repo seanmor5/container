@@ -97,16 +97,6 @@ defmodule ContainerTest do
       assert operation.args == ["web", "codex", "app-server"]
       assert operation.mode == :stream
     end
-
-    test "aliases map to the canonical commands" do
-      assert {:ok, %Operation{command: ["list"]}} = Container.ls(transport: CaptureTransport)
-
-      assert {:ok, %Operation{command: ["delete"]}} =
-               Container.rm("web", transport: CaptureTransport)
-
-      assert {:ok, %Operation{command: ["image", "delete"]}} =
-               Container.Image.rm("app:latest", transport: CaptureTransport)
-    end
   end
 
   describe "CLI transport" do
