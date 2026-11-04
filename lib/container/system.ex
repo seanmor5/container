@@ -117,9 +117,13 @@ defmodule Container.System do
 
   All other keyword options are passed through to `container system logs`
   as CLI flags.
+
+  `follow: true` returns a `Container.Exec` session instead of blocking in
+  collect mode. Pass `stream: false` to opt out.
   """
   def logs(opts \\ []) do
-    Command.dispatch([:system, :logs], [], opts)
+    {operation_opts, opts} = Command.log_operation_opts(opts)
+    Command.dispatch([:system, :logs], [], opts, operation_opts)
   end
 
   @doc """

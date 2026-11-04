@@ -4,6 +4,9 @@ defmodule Container.Builder do
 
   `Container.Builder` wraps the `container builder` namespace, which
   manages the builder service used for image builds.
+
+  As of Apple container 1.6, `builder` is a CLI plugin. Start the services
+  with `container system start` before using these functions.
   """
 
   alias Container.Command

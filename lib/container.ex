@@ -19,7 +19,10 @@ defmodule Container do
     * `inspect/2` - inspect one or more containers
     * `stats/2` - retrieve container statistics
     * `exec/3` - execute a process inside a running container
-    * `export/2` - export a stopped container's filesystem
+    * `export/2` - export a container's filesystem
+    * `commit/3` - create an image from a container's filesystem
+    * `copy/3` - copy files between the host and a running container
+    * `clean/2` - reclaim unused space in running containers
     * `prune/1` - remove stopped containers
 
   CLI flags are passed through from function keyword options. For example, `detach: true`
@@ -35,11 +38,13 @@ defmodule Container do
     * `Container.System` manages engine-wide lifecycle, status, logs, version, and disk usage.
     * `Container.System.DNS` manages system DNS entries for the container runtime.
     * `Container.System.Property` manages system property listing and mutation.
-    * `Container.System.Kernel` applies kernel-related system settings.
+    * `Container.System.Kernel` installs the Linux kernel used by the runtime.
+    * `Container.Machine` manages persistent container machines.
+    * `Container.Cluster` manages experimental local Kubernetes clusters.
 
   ### Examples
 
-      Container.run("nginx:latest", [], name: "web", detach: true)
+      Container.run("nginx:latest", name: "web", detach: true)
       Container.list(all: true)
       Container.inspect("web")
       Container.logs("web", tail: 50)
@@ -52,7 +57,9 @@ defmodule Container do
       Container.exec("web", ["sh", "-lc", "echo hello"])
 
   Pass `stream: true` when you need to keep the process open and interact
-  with it incrementally through `Container.Exec`:
+  with it incrementally through `Container.Exec`. `logs/2` and
+  `Container.System.logs/1` do this automatically when `follow: true`,
+  because a collected follow would never return.
 
       {:ok, session} =
         Container.exec("web", ["sh"], stream: true, interactive: true)
@@ -98,12 +105,19 @@ defmodule Container do
 
     * `:transport_opts` - configure the transport options used for execution
 
-  All other keyword options are passed through to `container run` as a CLI flags.
+  All other keyword options are passed through to `container run` as CLI flags.
+
+  A keyword list in the command position is treated as options, so
+  `run("nginx:latest", detach: true)` does not need an empty command list.
+  Calls default to `--progress none`. Pass `progress: "auto"` to keep the
+  CLI default. `stream: true` returns a `Container.Exec` session.
   """
   @spec run(String.t(), command_args(), options()) ::
           {:ok, term()} | {:error, Container.Error.t()}
-  def run(image, command \\ [], opts \\ []) do
-    Command.dispatch([:run], [image | List.wrap(command)], opts)
+  def run(image, command \\ [], opts \\ []) when is_binary(image) do
+    {command, opts} = Command.take_keyword_opts(command, opts)
+    {operation_opts, opts} = Command.pop_session_opts(opts)
+    Command.dispatch([:run], [image | List.wrap(command)], opts, operation_opts)
   end
 
   @doc """
@@ -120,7 +134,7 @@ defmodule Container do
       Container.build("./app")
 
       # Specify a tag
-      Container.build(".", tag: "app:latest")
+      Container.build(tag: "app:latest")
 
   ## Options
 
@@ -129,9 +143,15 @@ defmodule Container do
     * `:transport_opts` - configure the transport options used for execution
 
   All other keyword options are passed through to `container build` as CLI flags.
+
+  As of Apple container 1.6, `build` is a CLI plugin. Start the services with
+  `container system start` before building. Calls default to `--progress plain`
+  so captured output is not a TTY progress bar. Pass `progress: "auto"` to
+  keep the CLI default.
   """
   @spec build(String.t(), options()) :: {:ok, term()} | {:error, Container.Error.t()}
   def build(context \\ ".", opts \\ []) do
+    {context, opts} = Command.take_build_context(context, opts)
     Command.dispatch([:build], [context], opts)
   end
 
@@ -158,8 +178,10 @@ defmodule Container do
   """
   @spec create(String.t(), command_args(), options()) ::
           {:ok, term()} | {:error, Container.Error.t()}
-  def create(image, command \\ [], opts \\ []) do
-    Command.dispatch([:create], [image | List.wrap(command)], opts)
+  def create(image, command \\ [], opts \\ []) when is_binary(image) do
+    {command, opts} = Command.take_keyword_opts(command, opts)
+    {operation_opts, opts} = Command.pop_session_opts(opts)
+    Command.dispatch([:create], [image | List.wrap(command)], opts, operation_opts)
   end
 
   @doc """
@@ -183,7 +205,8 @@ defmodule Container do
   @spec start(String.t() | atom() | integer(), options()) ::
           {:ok, term()} | {:error, Container.Error.t()}
   def start(container, opts \\ []) do
-    Command.dispatch([:start], [container], opts)
+    {operation_opts, opts} = Command.pop_session_opts(opts)
+    Command.dispatch([:start], [container], opts, operation_opts)
   end
 
   @doc """
@@ -207,6 +230,7 @@ defmodule Container do
   """
   @spec stop(identifiers(), options()) :: {:ok, term()} | {:error, Container.Error.t()}
   def stop(containers \\ [], opts \\ []) do
+    {containers, opts} = Command.take_keyword_opts(containers, opts)
     Command.dispatch([:stop], List.wrap(containers), opts)
   end
 
@@ -231,6 +255,7 @@ defmodule Container do
   """
   @spec kill(identifiers(), options()) :: {:ok, term()} | {:error, Container.Error.t()}
   def kill(containers \\ [], opts \\ []) do
+    {containers, opts} = Command.take_keyword_opts(containers, opts)
     Command.dispatch([:kill], List.wrap(containers), opts)
   end
 
@@ -255,6 +280,7 @@ defmodule Container do
   """
   @spec delete(identifiers(), options()) :: {:ok, term()} | {:error, Container.Error.t()}
   def delete(containers \\ [], opts \\ []) do
+    {containers, opts} = Command.take_keyword_opts(containers, opts)
     Command.dispatch([:delete], List.wrap(containers), opts)
   end
 
@@ -309,12 +335,14 @@ defmodule Container do
   @spec exec(String.t() | atom() | integer(), command_args(), options()) ::
           {:ok, term()} | {:error, Container.Error.t()}
   def exec(container, command, opts \\ []) do
-    {operation_opts, cli_opts} = exec_operation_opts(opts)
-    Command.dispatch([:exec], [container | List.wrap(command)], cli_opts, operation_opts)
+    {operation_opts, opts} = Command.pop_session_opts(opts)
+    Command.dispatch([:exec], [container | List.wrap(command)], opts, operation_opts)
   end
 
   @doc """
-  Exports a stopped container's filesystem.
+  Exports a container's filesystem.
+
+  A running container is snapshotted first so the archive stays consistent.
 
   `container` is passed as the container identifier and `opts` are encoded as
   CLI flags.
@@ -347,6 +375,7 @@ defmodule Container do
 
       Container.logs("web")
       Container.logs("web", tail: 50)
+      Container.logs("web", follow: true)
 
   ## Options
 
@@ -355,11 +384,16 @@ defmodule Container do
     * `:transport_opts` - configure the transport options used for execution
 
   All other keyword options are passed through to `container logs` as CLI flags.
+
+  `:tail` is the line count. The CLI only accepts `-n`, so that is the flag
+  that is encoded. `follow: true` returns a `Container.Exec` session instead
+  of blocking in collect mode. Pass `stream: false` to opt out.
   """
   @spec logs(String.t() | atom() | integer(), options()) ::
           {:ok, term()} | {:error, Container.Error.t()}
   def logs(container, opts \\ []) do
-    Command.dispatch([:logs], [container], opts)
+    {operation_opts, opts} = Command.log_operation_opts(opts)
+    Command.dispatch([:logs], [container], opts, operation_opts)
   end
 
   @doc """
@@ -409,12 +443,21 @@ defmodule Container do
   """
   @spec stats(identifiers(), options()) :: {:ok, term()} | {:error, Container.Error.t()}
   def stats(containers \\ [], opts \\ []) do
-    op_opts =
-      opts
-      |> Command.json_output_opts()
-      |> Command.ensure_option(opts, :no_stream, true)
+    {containers, opts} = Command.take_keyword_opts(containers, opts)
+    {session_opts, opts} = Command.pop_session_opts(opts)
 
-    Command.dispatch([:stats], List.wrap(containers), opts, op_opts)
+    if streaming_stats?(session_opts, opts) do
+      session_opts = Command.put_mode(session_opts, :stream)
+      Command.dispatch([:stats], List.wrap(containers), opts, session_opts)
+    else
+      op_opts =
+        opts
+        |> Command.json_output_opts()
+        |> Command.ensure_option(opts, :no_stream, true)
+        |> Keyword.merge(session_opts)
+
+      Command.dispatch([:stats], List.wrap(containers), opts, op_opts)
+    end
   end
 
   @doc """
@@ -439,18 +482,81 @@ defmodule Container do
     Command.dispatch([:prune], [], opts)
   end
 
-  defp exec_operation_opts(opts) do
-    {stdin, opts} = Keyword.pop(opts, :stdin)
-    {stream, opts} = Keyword.pop(opts, :stream, false)
+  @doc """
+  Creates an image from a container's filesystem.
 
-    operation_opts =
-      []
-      |> Command.put_stdin(normalize_stdin(stdin))
-      |> Command.put_mode(if(stream, do: :stream, else: :collect))
+  Running containers are snapshotted first. `commit` is a CLI plugin as of
+  Apple container 1.6 and requires `container system start`.
 
-    {operation_opts, opts}
+  ## Examples
+
+      Container.commit("web", "web:snapshot")
+
+  ## Options
+
+    * `:transport` - configure the transport used for execution
+
+    * `:transport_opts` - configure the transport options used for execution
+
+  All other keyword options are passed through to `container commit` as CLI flags.
+  """
+  @spec commit(String.t() | atom() | integer(), String.t(), options()) ::
+          {:ok, term()} | {:error, Container.Error.t()}
+  def commit(container, reference, opts \\ []) do
+    Command.dispatch([:commit], [container, reference], opts)
   end
 
-  defp normalize_stdin(nil), do: nil
-  defp normalize_stdin(stdin), do: IO.iodata_to_binary(stdin)
+  @doc """
+  Copies files between the host and a running container.
+
+  One of `source` or `destination` must be a container path in the form
+  `container_id:path`.
+
+  ## Examples
+
+      Container.copy("./config.json", "web:/etc/app/config.json")
+      Container.copy("web:/var/log/app.log", "./logs/app.log")
+
+  ## Options
+
+    * `:transport` - configure the transport used for execution
+
+    * `:transport_opts` - configure the transport options used for execution
+
+  All other keyword options are passed through to `container copy` as CLI flags.
+  """
+  @spec copy(String.t(), String.t(), options()) ::
+          {:ok, term()} | {:error, Container.Error.t()}
+  def copy(source, destination, opts \\ []) do
+    Command.dispatch([:copy], [source, destination], opts)
+  end
+
+  @doc """
+  Reclaims unused space in one or more running containers.
+
+  The containers must be running. `clean` is a CLI plugin and requires
+  `container system start`.
+
+  ## Examples
+
+      Container.clean("web")
+      Container.clean(["web", "worker"])
+
+  ## Options
+
+    * `:transport` - configure the transport used for execution
+
+    * `:transport_opts` - configure the transport options used for execution
+
+  All other keyword options are passed through to `container clean` as CLI flags.
+  """
+  @spec clean(identifiers(), options()) :: {:ok, term()} | {:error, Container.Error.t()}
+  def clean(containers, opts \\ []) do
+    {containers, opts} = Command.take_keyword_opts(containers, opts)
+    Command.dispatch([:clean], List.wrap(containers), opts)
+  end
+
+  defp streaming_stats?(session_opts, opts) do
+    Keyword.get(session_opts, :mode) == :stream or Keyword.get(opts, :no_stream) == false
+  end
 end

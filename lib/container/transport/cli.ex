@@ -59,31 +59,44 @@ defmodule Container.Transport.CLI do
   end
 
   @doc false
-  def run_command(executable, argv, nil) do
-    {stdout, exit_status} = System.cmd(executable, argv, stderr_to_stdout: true)
-    {:ok, %{stdout: stdout, stderr: "", exit_status: exit_status}}
-  rescue
-    error -> {:error, error}
+  def run_command(executable, argv, stdin) do
+    argv = Enum.map(argv, &to_string/1)
+
+    # Collect through the same FIFO-backed session as streaming exec. System.cmd
+    # cannot take stdin, and a temp file would put secrets on disk.
+    with {:ok, session} <-
+           Container.Exec.open(
+             executable: executable,
+             argv: argv,
+             command: [to_string(executable) | argv],
+             stdin: stdin
+           ),
+         :ok <- Container.Exec.close_stdin(session) do
+      collect_output(session, [])
+    end
   end
 
-  def run_command(executable, argv, stdin) when is_binary(stdin) do
-    path = temp_path()
+  defp collect_output(session, acc) do
+    case Container.Exec.read(session, :infinity) do
+      {:ok, chunk} ->
+        collect_output(session, [chunk | acc])
 
-    try do
-      File.write!(path, stdin)
+      :eof ->
+        stdout = IO.iodata_to_binary(Enum.reverse(acc))
 
-      {stdout, exit_status} =
-        System.cmd(
-          "/bin/sh",
-          ["-c", "input=$1; shift; cat \"$input\" | exec \"$@\"", "sh", path, executable | argv],
-          stderr_to_stdout: true
-        )
+        case Container.Exec.await_exit(session, :infinity) do
+          {:ok, %Container.Result{stderr: stderr}} ->
+            {:ok, %{stdout: stdout, stderr: stderr, exit_status: 0}}
 
-      {:ok, %{stdout: stdout, stderr: "", exit_status: exit_status}}
-    rescue
-      error -> {:error, error}
-    after
-      File.rm(path)
+          {:error, %Container.Error{stderr: stderr, exit_status: exit_status}} ->
+            {:ok, %{stdout: stdout, stderr: stderr || "", exit_status: exit_status}}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -176,8 +189,23 @@ defmodule Container.Transport.CLI do
     end
   end
 
-  defp flag(key) do
-    "--" <> (key |> to_string() |> String.replace("_", "-"))
+  # Flags that Apple's CLI only exposes in short form.
+  @short_flags %{
+    tail: "-n",
+    lines: "-n",
+    n: "-n",
+    size: "-s",
+    s: "-s"
+  }
+
+  defp flag(key) when is_atom(key) do
+    Map.get(@short_flags, key) || flag(Atom.to_string(key))
+  end
+
+  defp flag("-" <> _ = key), do: key
+
+  defp flag(key) when is_binary(key) do
+    "--" <> String.replace(key, "_", "-")
   end
 
   defp keyword_list?(list) do
@@ -188,11 +216,4 @@ defmodule Container.Transport.CLI do
   end
 
   defp full_command(executable, argv), do: [to_string(executable) | argv]
-
-  defp temp_path do
-    Path.join(
-      System.tmp_dir!(),
-      "container-#{System.unique_integer([:positive, :monotonic])}.stdin"
-    )
-  end
 end

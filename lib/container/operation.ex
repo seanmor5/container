@@ -28,12 +28,10 @@ defmodule Container.Operation do
 
   @doc false
   def new(command, args \\ [], opts \\ [], operation_opts \\ []) do
-    operation_opts = merge_cli_opts(operation_opts)
-
     %__MODULE__{
-      command: Enum.map(command, &to_string/1),
+      command: Enum.map(command, &command_segment/1),
       args: normalize_many(args),
-      opts: normalize_opts(Keyword.get(operation_opts, :opts, opts)),
+      opts: normalize_opts(merge_opts(opts, operation_opts)),
       stdin: Keyword.get(operation_opts, :stdin),
       output: Keyword.get(operation_opts, :output, :raw),
       output_flag: Keyword.get(operation_opts, :output_flag, false),
@@ -41,10 +39,10 @@ defmodule Container.Operation do
     }
   end
 
-  defp merge_cli_opts(operation_opts) do
+  defp merge_opts(cli_opts, operation_opts) do
     case Keyword.fetch(operation_opts, :opts) do
-      {:ok, nested_opts} -> Keyword.put(operation_opts, :opts, nested_opts)
-      :error -> operation_opts
+      {:ok, nested_opts} -> Keyword.merge(cli_opts, nested_opts)
+      :error -> cli_opts
     end
   end
 
@@ -60,6 +58,12 @@ defmodule Container.Operation do
   end
 
   defp normalize_value(value), do: value
+
+  defp command_segment(segment) do
+    segment
+    |> to_string()
+    |> String.replace("_", "-")
+  end
 
   defp normalize_many(values) do
     values
