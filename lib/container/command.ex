@@ -5,12 +5,64 @@ defmodule Container.Command do
 
   @reserved_opts [:transport, :transport_opts]
 
+  # Scripted calls should not inherit a TTY progress bar. `build` does not
+  # accept `none`; `plain` is its non-interactive progress type.
+  @progress_defaults %{
+    ["run"] => "none",
+    ["build"] => "plain",
+    ["image", "pull"] => "none",
+    ["image", "push"] => "none",
+    ["machine", "create"] => "none"
+  }
+
   def dispatch(command, args \\ [], opts \\ [], operation_opts \\ []) do
     {cli_opts, exec_opts} = split_exec_opts(opts)
+    cli_opts = put_default_progress(command, cli_opts)
 
     command
     |> Operation.new(args, cli_opts, operation_opts)
     |> execute(exec_opts)
+  end
+
+  @doc false
+  def take_keyword_opts(arg, []) when is_list(arg) do
+    if Keyword.keyword?(arg) do
+      {[], arg}
+    else
+      {arg, []}
+    end
+  end
+
+  def take_keyword_opts(arg, opts), do: {arg, opts}
+
+  @doc false
+  def take_build_context(context, []) when is_list(context) do
+    if Keyword.keyword?(context) do
+      {".", context}
+    else
+      {context, []}
+    end
+  end
+
+  def take_build_context(context, opts), do: {context, opts}
+
+  @doc false
+  def pop_session_opts(opts) do
+    {stdin, opts} = Keyword.pop(opts, :stdin)
+    {stream, opts} = Keyword.pop(opts, :stream, false)
+
+    operation_opts =
+      []
+      |> put_stdin(normalize_stdin(stdin))
+      |> put_mode(if(stream, do: :stream, else: :collect))
+
+    {operation_opts, opts}
+  end
+
+  @doc false
+  def log_operation_opts(opts) do
+    stream = Keyword.get(opts, :stream, Keyword.get(opts, :follow, false))
+    pop_session_opts(Keyword.put(opts, :stream, stream))
   end
 
   def json_output_opts(opts, output_flag \\ true) do
@@ -58,6 +110,27 @@ defmodule Container.Command do
       end)
 
     {cli_pairs, exec_opts}
+  end
+
+  def normalize_stdin(nil), do: nil
+  def normalize_stdin(stdin), do: IO.iodata_to_binary(stdin)
+
+  defp put_default_progress(command, opts) do
+    case Map.get(@progress_defaults, command_key(command)) do
+      nil ->
+        opts
+
+      progress ->
+        if Keyword.has_key?(opts, :progress) do
+          opts
+        else
+          Keyword.put(opts, :progress, progress)
+        end
+    end
+  end
+
+  defp command_key(command) do
+    Enum.map(command, &to_string/1)
   end
 
   defp execute(%Operation{} = operation, exec_opts) do

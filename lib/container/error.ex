@@ -21,13 +21,20 @@ defmodule Container.Error do
     stdout = Keyword.get(opts, :stdout, "")
     stderr = Keyword.get(opts, :stderr, "")
 
+    detail = first_output([stderr, stdout])
+
+    message =
+      "container command failed (exit #{exit_status}): #{Enum.join(command || [], " ")}"
+
+    message = if(detail == "", do: message, else: message <> ": " <> detail)
+
     %__MODULE__{
       command: command,
       exit_status: exit_status,
       stdout: stdout,
       stderr: stderr,
       reason: Keyword.get(opts, :reason, :command_failed),
-      message: "container command failed (exit #{exit_status}): #{Enum.join(command || [], " ")}"
+      message: message
     }
   end
 
@@ -55,6 +62,13 @@ defmodule Container.Error do
       reason: reason,
       message: "container returned invalid JSON: #{format_reason(reason)}"
     }
+  end
+
+  defp first_output(outputs) do
+    outputs
+    |> Enum.find("", fn output -> is_binary(output) and String.trim(output) != "" end)
+    |> to_string()
+    |> String.trim()
   end
 
   defp format_reason(reason) when is_exception(reason) do

@@ -53,9 +53,11 @@ defmodule Container.System.DNS do
   end
 
   @doc """
-  Lists DNS entries.
+  Lists DNS entries and returns decoded JSON when supported.
 
-  `opts` are encoded as CLI flags.
+  `opts` are encoded as CLI flags. Unless `:quiet` or an explicit non-JSON
+  `:format` is provided, this command requests JSON output and returns the
+  decoded result.
 
   ## Examples
 
@@ -71,6 +73,6 @@ defmodule Container.System.DNS do
   as CLI flags.
   """
   def list(opts \\ []) do
-    Command.dispatch([:system, :dns, :list], [], opts)
+    Command.dispatch([:system, :dns, :list], [], opts, Command.json_output_opts(opts))
   end
 end

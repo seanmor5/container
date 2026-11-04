@@ -16,6 +16,7 @@ defmodule Container.Volume do
   ## Examples
 
       Container.Volume.create("app-data")
+      Container.Volume.create("app-data", size: "10g")
 
   ## Options
 
@@ -25,6 +26,8 @@ defmodule Container.Volume do
 
   All other keyword options are passed through to `container volume create`
   as CLI flags.
+
+  `:size` is encoded as `-s`. The CLI does not accept `--size`.
   """
   def create(name, opts \\ []) do
     Command.dispatch([:volume, :create], [name], opts)
@@ -51,6 +54,7 @@ defmodule Container.Volume do
   as CLI flags.
   """
   def delete(volumes \\ [], opts \\ []) do
+    {volumes, opts} = Command.take_keyword_opts(volumes, opts)
     Command.dispatch([:volume, :delete], List.wrap(volumes), opts)
   end
 

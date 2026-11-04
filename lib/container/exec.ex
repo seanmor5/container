@@ -21,6 +21,10 @@ defmodule Container.Exec do
   `await_exit/2` blocks until the child process exits and returns either
   `{:ok, %Container.Result{}}` for a zero exit status or
   `{:error, %Container.Error{}}` for a non-zero exit status.
+
+  `close_stdin/1` closes the write side of stdin so the child observes EOF
+  without tearing down stdout. Ports cannot half-close their own stdin, so
+  the session writes through a private FIFO instead.
   """
 
   use GenServer
@@ -112,6 +116,20 @@ defmodule Container.Exec do
     safe_call(pid, :close)
   end
 
+  @doc """
+  Closes stdin so the child process observes EOF.
+
+  stdout remains open. Further writes return `{:error, :closed}`.
+
+  ## Examples
+
+      :ok = Container.Exec.write(session, "hello")
+      :ok = Container.Exec.close_stdin(session)
+  """
+  def close_stdin(%__MODULE__{pid: pid}) do
+    safe_call(pid, :close_stdin)
+  end
+
   @impl true
   def init(opts) do
     executable =
@@ -123,15 +141,22 @@ defmodule Container.Exec do
     command = Keyword.fetch!(opts, :command)
     stdin = Keyword.get(opts, :stdin)
     stderr_path = temp_path("stderr")
-    port = open_port(executable, argv, stderr_path)
+    File.touch!(stderr_path)
+    File.chmod!(stderr_path, 0o600)
+
+    {port, stdin_writer, fifo_path} = open_session(executable, argv, stderr_path)
+    # Both ends are open, so the directory entry can go. The inode lives
+    # until the descriptors close, including if this process dies.
+    File.rm(fifo_path)
 
     if is_binary(stdin) and stdin != "" do
-      true = Port.command(port, stdin)
+      :ok = write_stdin(stdin_writer, stdin)
     end
 
     {:ok,
      %{
        port: port,
+       stdin_writer: stdin_writer,
        command: command,
        stderr_path: stderr_path,
        output: :queue.new(),
@@ -148,16 +173,12 @@ defmodule Container.Exec do
     {:reply, {:error, :closed}, state}
   end
 
-  def handle_call({:write, data}, _from, state) do
-    reply =
-      case Port.command(state.port, data) do
-        true -> :ok
-        false -> {:error, :closed}
-      end
+  def handle_call({:write, _data}, _from, %{stdin_writer: nil} = state) do
+    {:reply, {:error, :closed}, state}
+  end
 
-    {:reply, reply, state}
-  rescue
-    error -> {:reply, {:error, error}, state}
+  def handle_call({:write, data}, _from, state) do
+    {:reply, write_stdin(state.stdin_writer, data), state}
   end
 
   def handle_call(:read, from, %{output: output} = state) do
@@ -182,10 +203,26 @@ defmodule Container.Exec do
     {:noreply, %{state | pending_exit_waiters: state.pending_exit_waiters ++ [from]}}
   end
 
+  def handle_call(:close_stdin, _from, state) do
+    close_stdin_writer(state.stdin_writer)
+    {:reply, :ok, %{state | stdin_writer: nil}}
+  end
+
   def handle_call(:close, _from, state) do
+    reply_pending(state, :eof, {:error, :closed})
     cleanup_port(state.port)
+    close_stdin_writer(state.stdin_writer)
     cleanup_file(state.stderr_path)
-    {:stop, :normal, :ok, %{state | port: nil, stderr_path: nil}}
+
+    {:stop, :normal, :ok,
+     %{
+       state
+       | port: nil,
+         stdin_writer: nil,
+         stderr_path: nil,
+         pending_reads: [],
+         pending_exit_waiters: []
+     }}
   end
 
   @impl true
@@ -207,14 +244,15 @@ defmodule Container.Exec do
   def handle_info({port, {:exit_status, exit_status}}, %{port: port} = state) do
     exit_result = build_exit_result(state.command, exit_status, read_stderr(state.stderr_path))
 
-    Enum.each(state.pending_reads, &GenServer.reply(&1, :eof))
-    Enum.each(state.pending_exit_waiters, &GenServer.reply(&1, exit_result))
+    reply_pending(state, :eof, exit_result)
+    close_stdin_writer(state.stdin_writer)
     cleanup_file(state.stderr_path)
 
     {:noreply,
      %{
        state
        | port: nil,
+         stdin_writer: nil,
          stderr_path: nil,
          pending_reads: [],
          pending_exit_waiters: [],
@@ -229,6 +267,7 @@ defmodule Container.Exec do
   @impl true
   def terminate(_reason, state) do
     cleanup_port(state[:port])
+    close_stdin_writer(state[:stdin_writer])
     cleanup_file(state[:stderr_path])
     :ok
   end
@@ -256,13 +295,93 @@ defmodule Container.Exec do
     end
   end
 
-  defp open_port(executable, argv, stderr_path) do
+  defp open_session(executable, argv, stderr_path) do
+    fifo_path = temp_path("fifo")
+    File.rm(fifo_path)
+    parent = self()
+
+    try do
+      {"", 0} = System.cmd("mkfifo", ["-m", "600", fifo_path])
+      # The writer owns the FIFO fd. Opening it in this process would deadlock
+      # against the reader, and a borrowed fd would close when the opener exited.
+      writer = spawn(fn -> stdin_writer(parent, fifo_path) end)
+      port = open_port(executable, argv, fifo_path, stderr_path)
+      :ok = await_stdin(writer)
+      {port, writer, fifo_path}
+    rescue
+      error ->
+        File.rm(fifo_path)
+        reraise error, __STACKTRACE__
+    end
+  end
+
+  defp stdin_writer(parent, fifo_path) do
+    ref = Process.monitor(parent)
+
+    case File.open(fifo_path, [:write, :binary, :raw]) do
+      {:ok, io} ->
+        send(parent, {:stdin_fifo, self(), :ok})
+        stdin_loop(io, ref)
+
+      {:error, reason} ->
+        send(parent, {:stdin_fifo, self(), {:error, reason}})
+    end
+  end
+
+  defp stdin_loop(io, ref) do
+    receive do
+      {:write, from, data} ->
+        send(from, {:stdin_write, IO.binwrite(io, data)})
+        stdin_loop(io, ref)
+
+      :close ->
+        File.close(io)
+
+      {:DOWN, ^ref, _, _, _} ->
+        File.close(io)
+    end
+  end
+
+  defp await_stdin(writer) do
+    receive do
+      {:stdin_fifo, ^writer, :ok} ->
+        :ok
+
+      {:stdin_fifo, ^writer, {:error, reason}} ->
+        raise ArgumentError, "could not open stdin fifo: #{inspect(reason)}"
+    after
+      1_000 ->
+        Process.exit(writer, :kill)
+        raise ArgumentError, "timed out opening stdin fifo"
+    end
+  end
+
+  defp write_stdin(writer, data) do
+    send(writer, {:write, self(), data})
+
+    receive do
+      {:stdin_write, :ok} -> :ok
+      {:stdin_write, {:error, reason}} -> {:error, reason}
+    after
+      5_000 -> {:error, :timeout}
+    end
+  end
+
+  defp close_stdin_writer(nil), do: :ok
+
+  defp close_stdin_writer(writer) do
+    if Process.alive?(writer), do: send(writer, :close)
+    :ok
+  end
+
+  defp open_port(executable, argv, fifo_path, stderr_path) do
     shell = "/bin/sh"
 
     shell_argv = [
       "-c",
-      "stderr_path=$1; shift; exec \"$@\" 2>>\"$stderr_path\"",
+      "stdin_path=$1; stderr_path=$2; shift 2; exec \"$@\" <\"$stdin_path\" 2>>\"$stderr_path\"",
       "sh",
+      fifo_path,
       stderr_path,
       executable | argv
     ]
@@ -275,6 +394,11 @@ defmodule Container.Exec do
       :eof,
       {:args, Enum.map(shell_argv, &String.to_charlist/1)}
     ])
+  end
+
+  defp reply_pending(state, read_reply, exit_reply) do
+    Enum.each(state.pending_reads, &GenServer.reply(&1, read_reply))
+    Enum.each(state.pending_exit_waiters, &GenServer.reply(&1, exit_reply))
   end
 
   defp build_exit_result(command, 0, stderr) do

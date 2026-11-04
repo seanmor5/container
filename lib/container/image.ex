@@ -18,7 +18,7 @@ defmodule Container.Image do
   ## Examples
 
       Container.Image.list()
-      Container.Image.list(all: true)
+      Container.Image.list(verbose: true)
 
   ## Options
 
@@ -169,6 +169,7 @@ defmodule Container.Image do
   as CLI flags.
   """
   def delete(images \\ [], opts \\ []) do
+    {images, opts} = Command.take_keyword_opts(images, opts)
     Command.dispatch([:image, :delete], List.wrap(images), opts)
   end
 

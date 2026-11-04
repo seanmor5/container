@@ -9,13 +9,14 @@ defmodule Container.System.Kernel do
   alias Container.Command
 
   @doc """
-  Applies kernel settings.
+  Installs or updates the Linux kernel used by the runtime.
 
   `opts` are encoded as CLI flags.
 
   ## Examples
 
-      Container.System.Kernel.set(memory: "8GiB")
+      Container.System.Kernel.set(recommended: true)
+      Container.System.Kernel.set(binary: "/path/to/vmlinux", arch: "arm64")
 
   ## Options
 

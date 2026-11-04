@@ -51,6 +51,7 @@ defmodule Container.Network do
   as CLI flags.
   """
   def delete(networks \\ [], opts \\ []) do
+    {networks, opts} = Command.take_keyword_opts(networks, opts)
     Command.dispatch([:network, :delete], List.wrap(networks), opts)
   end
 
